@@ -1,0 +1,96 @@
+set -x
+ENGINE=${1:-vllm}
+# export HCCL_BUFFSIZE=1024
+# # Some models are optimized by vllm ascend. While in some case, e.g. rlhf training, 
+# # the optimized model may not be suitable. In this case, set this value to 0 to disable the optimized model.
+# export USE_OPTIMIZED_MODEL=0
+
+# export ASCEND_LAUNCH_BLOCKING=0       # debug usage, wh/ich seriously affects performance after use, but the error stack is accurate
+# # export HCCL_OP_EXPANSION_MODE=AIV  
+# export HCCL_OP_EXPANSION_MODE="AIV"
+
+# export VLLM_ASCEND_ENABLE_FLASHCOMM=1
+# export MULTI_STREAM_MEMORY_REUSE=1
+# export VLLM_ASCEND_ENABLE_PREFETCH_MLP=1
+
+# export VLLM_ASCEND_ENABLE_NZ=0
+# export VLLM_ENABLE_MC2=1   
+# export RAY_DEDUP_LOGS=0
+# export CPU_AFFINITY_CONF=1
+# export HCCL_EXEC_TIMEOUT=7200
+# export HCCL_CONNECT_TIMEOUT=7200
+# export VLLM_USE_V1=1
+# export HCCL_IF_BASE_PORT=50000
+# export VLLM_ASCEND_ENABLE_MOE_ALL2ALL_SEQ=1
+# export HCCL_ASYNC_ERROR_HANDLING=0
+# export P2P_HCCL_BUFFSIZE=20
+# export HYDRA_FULL_ERROR=1
+export HCCL_BUFFSIZE=1024
+    # actor_rollout_ref.model.path=/mnt/share/w00914260/model/Qwen3-30B-MoE-merge \
+    # actor_rollout_ref.model.path=/mnt/share/w00914260/model/Qwen3-30B-A3B_reduced-merge \
+# export TASK_QUEUE_ENABLE=1
+TRAIN_FILE=/mnt/share/nurxat/gptoss/data/gsm8k/train.parquet
+TEST_FILE=/mnt/share/nurxat/gptoss/data/gsm8k/test.parquet
+# TRAIN_FILE=/mnt/share/w00914260/32b/qwen25_32b_dataset_math/dapo-math-17k.parquet
+# TEST_FILE=/mnt/share/w00914260/32b/qwen25_32b_dataset_math/dapo-math-17k.parquet
+# TRAIN_FILE=/mnt/share/w00914260/32b/qwen25_32b_dataset_math/dapo-math-17k.parquet
+# TEST_FILE=/mnt/share/w00914260/full_async/verl/aime-2024.parquet
+max_prompt_length=$((1024 * 2))
+max_response_length=$((1024 * 8))
+rollout_max_num_seqs=$((128))
+
+python3 -m verl.trainer.main_ppo --config-path=/mnt/share/w00914260/veomni-verl-main/huazhong/verl/verl/trainer/config/ \
+    --config-name="ppo_veomni_trainer.yaml" \
+    algorithm.adv_estimator=grpo \
+    data.train_files=${TRAIN_FILE} \
+    data.val_files=${TEST_FILE} \
+    data.train_batch_size=16 \
+    data.max_prompt_length=${max_prompt_length} \
+    data.max_response_length=${max_response_length} \
+    data.filter_overlong_prompts=False \
+    data.truncation='error' \
+    data.image_key=images \
+    actor_rollout_ref.model.path=/mnt/share/w00914260/model/Qwen3-30B-MoE-merge \
+    actor_rollout_ref.actor.optim.lr=1e-6 \
+    actor_rollout_ref.model.use_remove_padding=True \
+    actor_rollout_ref.actor.veomni.param_offload=True \
+    actor_rollout_ref.actor.veomni.optimizer_offload=True \
+    actor_rollout_ref.actor.ppo_mini_batch_size=4 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.actor.use_kl_loss=True \
+    actor_rollout_ref.actor.kl_loss_coef=0.01 \
+    actor_rollout_ref.actor.kl_loss_type=low_var_kl \
+    actor_rollout_ref.actor.entropy_coeff=0 \
+    actor_rollout_ref.actor.use_torch_compile=False \
+    actor_rollout_ref.actor.veomni.data_parallel_size=16 \
+    actor_rollout_ref.actor.veomni.expert_parallel_size=16 \
+    actor_rollout_ref.model.enable_gradient_checkpointing=True \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.rollout.data_parallel_size=16 \
+    actor_rollout_ref.rollout.expert_parallel_size=16 \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=1 \
+    actor_rollout_ref.rollout.name=$ENGINE \
+    +actor_rollout_ref.rollout.engine_kwargs.vllm.disable_mm_preprocessor_cache=True \
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.6 \
+    actor_rollout_ref.rollout.enable_chunked_prefill=True \
+    actor_rollout_ref.rollout.enable_prefix_caching=True \
+    actor_rollout_ref.rollout.max_model_len=$((max_prompt_length + max_response_length)) \
+    actor_rollout_ref.rollout.max_num_batched_tokens=$((1024)) \
+    actor_rollout_ref.rollout.max_num_seqs=${rollout_max_num_seqs} \
+    actor_rollout_ref.rollout.enforce_eager=False \
+    actor_rollout_ref.rollout.free_cache_engine=True \
+    actor_rollout_ref.rollout.n=8 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.ref.veomni.param_offload=True \
+    algorithm.use_kl_in_reward=False \
+    trainer.use_legacy_worker_impl=disable \
+    trainer.critic_warmup=0 \
+    trainer.logger=console \
+    trainer.project_name='verl_grpo_example_geo3k' \
+    trainer.experiment_name='qwen2_5_vl_3b_function_rm' \
+    trainer.n_gpus_per_node=16 \
+    trainer.nnodes=1 \
+    trainer.save_freq=-1 \
+    trainer.test_freq=-1 \
+    trainer.total_epochs=15 \
+    2>&1 | tee "logs/veomni-$(date +%Y%m%d_%H%M).log" \ 
