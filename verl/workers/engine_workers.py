@@ -17,7 +17,7 @@ import os
 from contextlib import nullcontext
 from functools import partial
 from itertools import chain
-
+from verl.utils.device import get_device_name, get_torch_device, set_expandable_segments
 import torch
 from codetiming import Timer
 from omegaconf import DictConfig, open_dict
@@ -558,6 +558,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             rollout_device_mesh = init_device_mesh(
                 get_device_name(), mesh_shape=(dp, infer_tp, infer_pp), mesh_dim_names=["dp", "infer_tp", "infer_pp"]
             )
+            # 3.2 init trainer and rollout random states
+            self.torch_random_states = get_torch_device().get_rng_state()
+            gen_dp_rank = rollout_device_mesh["dp"].get_local_rank()
+            get_torch_device().manual_seed(gen_dp_rank + 1000)  # make sure all tp ranks have the same random states
+            self.gen_random_states = get_torch_device().get_rng_state()
+            get_torch_device().set_rng_state(self.torch_random_states)
 
             # 3.2 initialize rollout engine
             rollout_cls: type[BaseRollout] = get_rollout_class(rollout_config.name, rollout_config.mode)
@@ -611,6 +617,72 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     def save_checkpoint(self, local_path, hdfs_path=None, global_step=0, max_ckpt_to_keep=None):
         assert "actor" in self.role, "save_checkpoint only support actor role"
         self.actor.save_checkpoint(local_path, hdfs_path, global_step, max_ckpt_to_keep)
+
+    @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
+    async def sleep(self):
+        """Context switch from rollout mode to trainer mode."""
+        if self.config.rollout.free_cache_engine:
+            log_gpu_memory_usage("Before rollout offload", logger=logger)
+            await self.rollout.release()
+            log_gpu_memory_usage("After rollout offload", logger=logger)
+
+        # add empty cache after each compute
+        aggressive_empty_cache(force_sync=True)
+        set_expandable_segments(True)
+
+        # restore random states
+        self.gen_random_states = get_torch_device().get_rng_state()
+        get_torch_device().set_rng_state(self.torch_random_states)
+
+    @register(dispatch_mode=Dispatch.DIRECT_ROLLOUT_METHOD)
+    async def wake_up(self):
+        """Context switch trainer mode to rollout mode."""
+        aggressive_empty_cache(force_sync=True)
+        set_expandable_segments(False)
+
+        # 1. resume weights and update weights
+        if self.config.rollout.free_cache_engine:
+            await self.rollout.resume(tags=["weights"])
+        log_gpu_memory_usage("After resume weights", logger=logger)
+
+        # 2. get per tensor generator from engine, this will load model to gpu
+        per_tensor_param, peft_config = self.actor.engine.get_per_tensor_param(
+            layered_summon=self.layered_summon, base_sync_done=True
+        )
+
+        await self.rollout.update_weights(per_tensor_param, peft_config=peft_config, base_sync_done=True)
+
+        do_lora_base_sync = False
+        if not self.peft_merge and peft_config is not None:
+            # set sleep level for LoRA adapter weights only sync
+            # TODO: make this configurable so that users with small
+            # main memory can trade sync time to avoid OOM
+            self.rollout.sleep_level = 1
+
+            do_lora_base_sync = not self.base_sync_done or self.rollout.sleep_level != 1
+
+        if do_lora_base_sync:
+            per_tensor_base_params, _ = self.actor.engine.get_per_tensor_param(
+                layered_summon=self.layered_summon, base_sync_done=False
+            )
+            await self.rollout.update_weights(per_tensor_base_params, peft_config=peft_config, base_sync_done=False)
+
+        log_gpu_memory_usage("After update_weights", logger=logger)
+
+        # 3. offload model to cpu
+        self.actor.engine.to("cpu", model=True, optimizer=False, grad=False)
+        aggressive_empty_cache(force_sync=True)
+
+        # 4. resume kv_cache
+        if self.config.rollout.free_cache_engine:
+            await self.rollout.resume(tags=["kv_cache"])
+        log_gpu_memory_usage("After resume kv_cache", logger=logger)
+
+        self.base_sync_done = True
+        # important: need to manually set the random states of each tp to be identical.
+        self.torch_random_states = get_torch_device().get_rng_state()
+        get_torch_device().set_rng_state(self.gen_random_states)
+
 
     @register(dispatch_mode=Dispatch.ONE_TO_ALL, blocking=False)
     async def update_weights(self):

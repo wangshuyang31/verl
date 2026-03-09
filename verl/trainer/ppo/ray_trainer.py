@@ -388,6 +388,47 @@ class RayPPOTrainer:
 
     def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
         """Dump rollout/validation samples as JSONL."""
+        import os
+        import json
+
+        try:
+            import numpy as np
+        except Exception:
+            np = None
+        try:
+            import torch
+        except Exception:
+            torch = None
+
+        def _to_jsonable(x):
+            """Convert common non-JSON-serializable types (numpy/torch/etc.) into Python built-ins."""
+            # torch
+            if torch is not None:
+                if isinstance(x, torch.Tensor):
+                    return x.item() if x.numel() == 1 else x.detach().cpu().tolist()
+
+            # numpy
+            if np is not None:
+                if isinstance(x, np.generic):  # np.bool_, np.int64, np.float32, ...
+                    return x.item()
+                if isinstance(x, np.ndarray):
+                    return x.tolist()
+
+            # bytes / bytearray
+            if isinstance(x, (bytes, bytearray)):
+                try:
+                    return x.decode("utf-8")
+                except Exception:
+                    return repr(x)
+
+            # dict / list / tuple
+            if isinstance(x, dict):
+                return {str(k): _to_jsonable(v) for k, v in x.items()}
+            if isinstance(x, (list, tuple)):
+                return [_to_jsonable(v) for v in x]
+
+            return x
+
         os.makedirs(dump_path, exist_ok=True)
         filename = os.path.join(dump_path, f"{self.global_steps}.jsonl")
 
@@ -406,13 +447,14 @@ class RayPPOTrainer:
 
         lines = []
         for i in range(n):
-            entry = {k: v[i] for k, v in base_data.items()}
+            entry = {k: _to_jsonable(v[i]) for k, v in base_data.items()}
             lines.append(json.dumps(entry, ensure_ascii=False))
 
-        with open(filename, "w") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
 
         print(f"Dumped generations to {filename}")
+
 
     def _log_rollout_data(
         self, batch: DataProto, reward_extra_infos_dict: dict, timing_raw: dict, rollout_data_dir: str

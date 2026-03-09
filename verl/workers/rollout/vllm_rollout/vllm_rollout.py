@@ -238,9 +238,9 @@ class ServerAdapter(BaseRollout):
         if future is not None:
             await future
 
-        # reset prefix cache after updating weights
-        if self.rollout_rank == 0:
-            await self.server_handle.clear_kv_cache.remote()
+        # # reset prefix cache after updating weights
+        # if self.rollout_rank == 0:
+        #     await self.server_handle.clear_kv_cache.remote()
 
         if self.replica_rank == 0 and self.rollout_rank == 0:
             logger.info(f"update_weights done, time cost: {time.time() - start_time:.2f}s")
