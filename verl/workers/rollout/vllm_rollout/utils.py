@@ -233,6 +233,7 @@ class vLLMColocateWorkerExtension:
                     self.sleep()
                     self.wake_up(tags=["kv_cache", "weights"])
                     patch_vllm_moe_model_weight_loader(self.model_runner.model)
+                self.model_runner.model.load_weights(weights)
 
     def _get_zmq_handle(self) -> str:
         """Get ZMQ handle for communication."""
