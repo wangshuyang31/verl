@@ -227,10 +227,12 @@ class vLLMColocateWorkerExtension:
                 logger.info(f"FP8 weights loaded (async), loaded_params: {len(loaded_params)}")
             else:
                 logger.info("Loading standard weights (non-FP8, async)")
-                self.sleep()
-                self.wake_up(tags=["kv_cache", "weights"])
-                patch_vllm_moe_model_weight_loader(self.model_runner.model)
-                self.model_runner.model.load_weights(weights)
+                # TODO: Since the gmm operator of vllm_ascend requires calling wakeup() to correctly transpose the weights for the qwen3-moe model, 
+                # we are temporarily bypassing this by explicitly calling the wakeup() function, and a more elegant solution will be implemented later.
+                if is_npu_available and self.model_runner.model_config.hf_config.model_type == "qwen3_moe":
+                    self.sleep()
+                    self.wake_up(tags=["kv_cache", "weights"])
+                    patch_vllm_moe_model_weight_loader(self.model_runner.model)
 
     def _get_zmq_handle(self) -> str:
         """Get ZMQ handle for communication."""
