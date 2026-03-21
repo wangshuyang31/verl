@@ -164,16 +164,9 @@ def vllm_ascend_v013_matmul_and_reduce_wrapper(fn):
 def vllm_v013_weight_loader_method_wrapper(fn):
     @wraps(fn)
     def wrapper(self, param, loaded_weight, weight_name, shard_id, expert_id, return_success=False):
-        # New logic: transpose weights for specific shard_id conditions
-        if (shard_id == 'w1' or shard_id == 'w3') and param.shape[1] == self.hidden_size:
-            w13_data = param.transpose(1, 2)
-            w13_data = torch.nn.Parameter(w13_data, requires_grad=False)
-            param.data = w13_data
-        elif shard_id == 'w2' and param.shape[2] == self.hidden_size:
-            w2_data = param.transpose(1, 2)
-            w2_data = torch.nn.Parameter(w2_data, requires_grad=False)
-            param.data = w2_data
-        
+        if (shard_id in ('w1', 'w3') and param.shape[1] == self.hidden_size) or \
+            (shard_id == 'w2' and param.shape[2] == self.hidden_size):
+            param.data = param.data.transpose(1,2)
         return fn(self, param, loaded_weight, weight_name, shard_id, expert_id, return_success)
     
     return wrapper
@@ -203,7 +196,11 @@ if is_torch_npu_available(check_device=False):
     _VLLM_VERSION = version.parse(vllm.__version__)
     if _VLLM_VERSION >= version.parse("0.13.0"):
         # Disable flash_attn in RotaryEmbedding (NPU) when VLLM >= 0.13
+        from vllm.model_executor.layers.fused_moe import FusedMoE
         patch_vllm013_rotary_emb()
+        FusedMoE.weight_loader = vllm_v013_weight_loader_method_wrapper(
+            FusedMoE.weight_loader
+        )
 
     VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2 = bool(int(os.getenv("VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2", "1")))
     if VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2:
@@ -218,10 +215,7 @@ if is_torch_npu_available(check_device=False):
             SequenceRowParallelOp.matmul_and_reduce = vllm_ascend_v013_matmul_and_reduce_wrapper(
                 SequenceRowParallelOp.matmul_and_reduce
             )
-            from vllm.model_executor.layers.fused_moe import FusedMoE
-            FusedMoE.weight_loader = vllm_v013_weight_loader_method_wrapper(
-                FusedMoE.weight_loader
-            )
+
         elif _VLLM_VERSION >= version.parse("0.11.0"):
             from vllm_ascend.ops.linear_op import SequenceRowParallelOp
             from vllm_ascend.worker.model_runner_v1 import NPUModelRunner
