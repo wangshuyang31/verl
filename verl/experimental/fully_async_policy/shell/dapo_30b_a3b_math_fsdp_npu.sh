@@ -5,8 +5,6 @@ set -xeuo pipefail
 # This script runs fully async PPO training with both FSDP2 and Megatron backends
 # to ensure the asynchronous training mechanism works correctly
 
-NUM_GPUS=${NUM_GPUS:-2}
-ACTOR_STRATEGY=${ACTOR_STRATEGY:-"fsdp2"}  # fsdp2 or megatron
 TRAIN_FILE=dapo-math-17k.parquet
 TEST_FILE=aime-2024.parquet
 
