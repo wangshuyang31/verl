@@ -164,9 +164,9 @@ def vllm_ascend_v013_matmul_and_reduce_wrapper(fn):
 def vllm_v013_weight_loader_method_wrapper(fn):
     @wraps(fn)
     def wrapper(self, param, loaded_weight, weight_name, shard_id, expert_id, return_success=False):
-        if (shard_id in ('w1', 'w3') and param.shape[1] == self.hidden_size) or \
-            (shard_id == 'w2' and param.shape[2] == self.hidden_size):
-            param.data = param.data.transpose(1,2)
+        if (shard_id in ("w1", "w3") and param.shape[1] == self.hidden_size) or (
+            shard_id == "w2" and param.shape[2] == self.hidden_size
+        ):
         return fn(self, param, loaded_weight, weight_name, shard_id, expert_id, return_success)
     
     return wrapper
@@ -198,9 +198,7 @@ if is_torch_npu_available(check_device=False):
         # Disable flash_attn in RotaryEmbedding (NPU) when VLLM >= 0.13
         from vllm.model_executor.layers.fused_moe import FusedMoE
         patch_vllm013_rotary_emb()
-        FusedMoE.weight_loader = vllm_v013_weight_loader_method_wrapper(
-            FusedMoE.weight_loader
-        )
+        FusedMoE.weight_loader = vllm_v013_weight_loader_method_wrapper(FusedMoE.weight_loader)
 
     VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2 = bool(int(os.getenv("VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2", "1")))
     if VERL_NPU_ENABLE_A2_PATCH_VLLM_ASCEND_MC2:
