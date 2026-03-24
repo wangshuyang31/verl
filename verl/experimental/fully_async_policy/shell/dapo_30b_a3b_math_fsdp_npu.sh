@@ -1,23 +1,14 @@
 #!/usr/bin/env bash
 set -xeuo pipefail
 
-# Test script for fully_async_policy E2E regression testing
-# This script runs fully async PPO training with both FSDP2 and Megatron backends
-# to ensure the asynchronous training mechanism works correctly
-
 TRAIN_FILE=dapo-math-17k.parquet
 TEST_FILE=aime-2024.parquet
-
 CKPTS_DIR=./ckpt
-
-# Download model if not exists
 MODEL_ID=${MODEL_ID:-Qwen/Qwen3-30B-A3B}
 MODEL_PATH=Qwen3-30B-A3B
-# hf download "${MODEL_ID}" --local-dir "${MODEL_PATH}"
-
 
 rollout_mode="async"
-rollout_name="vllm" # sglang or vllm
+rollout_name="vllm" 
 if [ "$rollout_mode" = "async" ]; then
     export VLLM_USE_V1=1
     return_raw_chat="True"
@@ -36,7 +27,6 @@ use_kl_in_reward=False
 kl_coef=0.0
 use_kl_loss=False
 kl_loss_coef=0.0
-
 clip_ratio_low=0.2
 clip_ratio_high=0.28
 
@@ -50,9 +40,8 @@ overlong_penalty_factor=1.0
 # Algorithm
 temperature=1.0
 top_p=1.0
-top_k=-1 # 0 for HF rollout, -1 for vLLM rollout
+top_k=-1
 val_top_p=0.7
-
 
 train_prompt_bsz=0
 gen_prompt_bsz=1
@@ -62,14 +51,13 @@ total_rollout_steps=$(((64*100)))
 test_freq=25
 staleness_threshold=0.45
 
-
 trigger_parameter_sync_step=2
 partial_rollout=True #True False
 enforce_eager=False
-nccl_timeout=7200 #3600
+nccl_timeout=7200
 
 # Performance Related Parameter
-sp_size=8 # 8 4
+sp_size=8
 use_dynamic_bsz=True
 actor_ppo_max_token_len=$(((max_prompt_length + max_response_length) / 8))
 infer_ppo_max_token_len=$(((max_prompt_length + max_response_length) / 8))
