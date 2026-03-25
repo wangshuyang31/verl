@@ -168,9 +168,9 @@ def vllm_v013_weight_loader_method_wrapper(fn):
         ):
             param.data = param.data.transpose(1, 2)
         return fn(self, param, loaded_weight, weight_name, shard_id, expert_id, return_success)
-    
+
     return wrapper
-    
+
 
 def patch_vllm013_rotary_emb():
     from vllm.model_executor.layers.rotary_embedding.common import ApplyRotaryEmb
@@ -197,6 +197,7 @@ if is_torch_npu_available(check_device=False):
     if _VLLM_VERSION >= version.parse("0.13.0"):
         # Disable flash_attn in RotaryEmbedding (NPU) when VLLM >= 0.13
         from vllm.model_executor.layers.fused_moe import FusedMoE
+        
         patch_vllm013_rotary_emb()
         FusedMoE.weight_loader = vllm_v013_weight_loader_method_wrapper(FusedMoE.weight_loader)
 
