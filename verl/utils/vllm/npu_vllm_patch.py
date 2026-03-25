@@ -167,6 +167,7 @@ def vllm_v013_weight_loader_method_wrapper(fn):
         if (shard_id in ("w1", "w3") and param.shape[1] == self.hidden_size) or (
             shard_id == "w2" and param.shape[2] == self.hidden_size
         ):
+            param.data = param.data.transpose(1,2)
         return fn(self, param, loaded_weight, weight_name, shard_id, expert_id, return_success)
     
     return wrapper
