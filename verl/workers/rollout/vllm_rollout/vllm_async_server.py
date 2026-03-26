@@ -49,6 +49,7 @@ from verl.workers.rollout.vllm_rollout.utils import (
     VLLM_LORA_PATH,
     SuppressSignalInThread,
     build_cli_args_from_config,
+    extract_prompt_logprobs,
     get_vllm_max_lora_rank,
 )
 
@@ -366,13 +367,8 @@ class vLLMHttpServer:
 
         # 3. launch server
         if self.node_rank == 0:
-            self._master_sock.close()
-            self._dp_rpc_sock.close()
-            self._dp_master_sock.close()
             await self.run_server(server_args)
         else:
-            # TODO: avoid connect before master_sock close
-            await asyncio.sleep(3)
             await self.run_headless(server_args)
 
     async def run_server(self, args: argparse.Namespace):
@@ -517,6 +513,12 @@ class vLLMHttpServer:
             final_res = output
         assert final_res is not None
 
+        extra_fields = {"global_steps": self.global_steps}
+        extract_prompt_logprobs(
+            output=final_res,
+            num_prompt_logprobs=sampling_params.prompt_logprobs,
+            result_dict=extra_fields,
+        )
         token_ids = final_res.outputs[0].token_ids
         log_probs = None
         if sampling_params.logprobs is not None:
@@ -546,7 +548,7 @@ class vLLMHttpServer:
             routed_experts=routed_experts,
             stop_reason=stop_reason,
             num_preempted=num_preempted,
-            extra_fields={"global_steps": self.global_steps},
+            extra_fields=extra_fields,
         )
 
     async def wake_up(self):
@@ -780,18 +782,27 @@ class vLLMHttpServer:
         # Handle QAT (Quantization-Aware Training) configuration
         qat_config_dict = getattr(self.config, "qat", {}) or {}
         if qat_config_dict.get("enable", False):
-            # QAT uses compressed-tensors quantization, apply patches for dynamic weight loading
-            from verl.utils.qat import QATConfig, apply_qat_patches, load_quantization_config
+            from verl.utils.qat import QATConfig, load_quantization_config
 
-            apply_qat_patches()
-
-            # Load quantization config from JSON file
             qat_config = QATConfig(**qat_config_dict)
             quantization_config_dict = load_quantization_config(qat_config)
-            hf_overrides["quantization_config"] = quantization_config_dict
-            quantization = "compressed-tensors"
+            quant_method = quantization_config_dict.get("quant_method", None)
 
-            logger.info("QAT quantization config injected to vLLM async server")
+            if quant_method == "modelopt":
+                from verl.utils.modelopt import apply_modelopt_nvfp4_patches
+
+                apply_modelopt_nvfp4_patches()
+                quantization = "modelopt"
+            elif quant_method == "compressed-tensors":
+                from verl.utils.qat import apply_qat_patches
+
+                apply_qat_patches()
+                quantization = "compressed-tensors"
+            else:
+                raise ValueError(f"Unsupported quant_method: {quant_method}")
+
+            logger.info(f"QAT quantization config injected (quant_method={quant_method})")
+            hf_overrides["quantization_config"] = quantization_config_dict
         elif quantization is not None:
             # Handle other quantization methods (fp8, torchao)
             _SUPPORTED_QUANTIZATION = ["fp8", "torchao"]
@@ -861,8 +872,9 @@ class vLLMReplica(RolloutReplica):
         model_config: HFModelConfig,
         gpus_per_node: int = 8,
         is_reward_model: bool = False,
+        is_teacher_model: bool = False,
     ):
-        super().__init__(replica_rank, config, model_config, gpus_per_node, is_reward_model)
+        super().__init__(replica_rank, config, model_config, gpus_per_node, is_reward_model, is_teacher_model)
         self.server_class = ray.remote(vLLMHttpServer)
 
     async def launch_servers(self):
@@ -897,12 +909,12 @@ class vLLMReplica(RolloutReplica):
             )
             node_id = worker_node_ids[node_rank * gpus_per_replica_node]
             prefix = self._get_server_name_prefix()
-            name = (
-                f"{prefix}server_{self.replica_rank}_{node_rank}"
-                if not self.is_reward_model
-                else f"{prefix}server_reward_{self.replica_rank}_{node_rank}"
-            )
-
+            if self.is_reward_model:
+                name = f"{prefix}server_reward_{self.replica_rank}_{node_rank}"
+            elif self.is_teacher_model:
+                name = f"{prefix}server_teacher_{self.replica_rank}_{node_rank}"
+            else:
+                name = f"{prefix}server_{self.replica_rank}_{node_rank}"
             server = self.server_class.options(
                 scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                     node_id=node_id,
