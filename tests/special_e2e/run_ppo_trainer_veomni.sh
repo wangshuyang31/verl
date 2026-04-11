@@ -114,5 +114,5 @@ else
     exit 1
 fi
 
-echo "Fully async policy E2E test completed successfully with veomni strategy"
+echo "test completed successfully with veomni backend"
 rm -rf "$SAVE_PATH"
