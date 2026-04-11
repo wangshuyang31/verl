@@ -26,7 +26,13 @@ EP_SIZE=${EP_SIZE:-1}
 MODEL_NAME_ONLY=${MODEL_ID##*/}
 VERL_EXP_NAME=${VERL_EXP_NAME:-${MODEL_NAME_ONLY}-function-reward-minimal-fsdp-size${FSDP_SIZE}}
 
-python3 -m verl.trainer.main_ppo \
+device_name=$(python3 - <<'EOF'
+from verl.utils.device import get_device_name
+print(get_device_name())
+EOF
+)
+
+common_params=(
     model_engine=veomni \
     algorithm.adv_estimator=grpo \
     data.train_files="${TRAIN_FILES}" \
@@ -62,7 +68,6 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.enforce_eager=True \
-    actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.n=2 \
     actor_rollout_ref.ref.veomni.optimizer_offload=True \
     algorithm.kl_ctrl.kl_coef=0.001 \
@@ -88,9 +93,26 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.ref.profiler.ranks=$PROFILE_RANKS \
     actor_rollout_ref.ref.profiler.tool_config.torch.discrete=$DISCRETE \
     actor_rollout_ref.ref.profiler.tool_config.torch.contents=$CONTENTS \
-    global_profiler.tool=torch \
-    global_profiler.steps=$PROFILE_STEPS \
-    global_profiler.save_path="$SAVE_PATH" $@
+)
 
-python3 "tests/utils/test_check_profiler_output.py" --profiler_dir="$SAVE_PATH" --device="gpu"
+if [ -n "$device_name" ] && [ "$device_name" == "gpu" ]; then
+    python3 -m verl.trainer.main_ppo \
+        "${common_params[@]}" \
+        global_profiler.tool=torch \
+        global_profiler.steps=$PROFILE_STEPS \
+        global_profiler.save_path="$SAVE_PATH" $@
+
+    python3 "tests/utils/test_check_profiler_output.py" --profiler_dir="$SAVE_PATH" --device="gpu"
+    
+elif [ -n "$device_name" ] && [ "$device_name" == "npu" ]; then
+    # NPU 设备运行
+    python3 -m verl.trainer.main_ppo \
+        "${common_params[@]}" \
+    
+else
+    echo "Unknown device: $device_name"
+    exit 1
+fi
+
+echo "Fully async policy E2E test completed successfully with veomni strategy"
 rm -rf "$SAVE_PATH"
