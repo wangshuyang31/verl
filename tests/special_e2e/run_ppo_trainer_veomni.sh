@@ -95,7 +95,7 @@ common_params=(
     actor_rollout_ref.ref.profiler.tool_config.torch.contents=$CONTENTS \
 )
 
-if [ -n "$device_name" ] && [ "$device_name" == "gpu" ]; then
+if [ -n "$device_name" ] && [ "$device_name" == "cuda" ]; then
     python3 -m verl.trainer.main_ppo \
         "${common_params[@]}" \
         global_profiler.tool=torch \
