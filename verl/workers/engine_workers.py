@@ -25,7 +25,10 @@ from codetiming import Timer
 from omegaconf import DictConfig, open_dict
 from tensordict import NonTensorData, TensorDict
 from torch.distributed.device_mesh import init_device_mesh
-
+try: 
+    from verl.workers.engine.mindspeed.transformer_impl import repatch 
+except ImportError: 
+    repatch = None
 from verl.checkpoint_engine import CheckpointEngineRegistry
 from verl.single_controller.base import Worker
 from verl.single_controller.base.decorator import Dispatch, make_nd_compute_dataproto_dispatch_fn, register
@@ -116,6 +119,10 @@ class TrainingWorker(Worker, DistProfilerExtension):
         # TODO: this is not elegant and should refactor later
         self.engine_config.use_remove_padding = self.model_config.get("use_remove_padding", False)
         self.engine_config.use_fused_kernels = self.model_config.get("use_fused_kernels", False)
+        
+       if repatch is not None: 
+             # NPU MindSpeed patch, will be refactored with MindSpeedEngine. 
+             repatch(self.engine_config.get("override_transformer_config", {}))
 
         self.profiler_config = self.config.profiler_config
         if self.profiler_config is not None:
