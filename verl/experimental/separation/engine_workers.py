@@ -85,7 +85,7 @@ class DetachActorWorker(ActorRolloutRefWorker):
             raise NotImplementedError(f"Unsupported strategy: {strategy}")
 
         return self._strategy_handlers
-        
+
     @property
     def copy_handler(self):
         return self._get_strategy_handlers()[0]
