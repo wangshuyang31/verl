@@ -52,6 +52,7 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.rollout.enable_prefix_caching=True \
     actor_rollout_ref.rollout.max_model_len=$((max_prompt_length + max_response_length)) \
     actor_rollout_ref.rollout.max_num_batched_tokens=$((1024)) \
+    actor_rollout_ref.rollout.max_num_seqs=${rollout_max_num_seqs} \
     actor_rollout_ref.rollout.enforce_eager=False \
     actor_rollout_ref.rollout.free_cache_engine=True \
     actor_rollout_ref.rollout.n=4 \
