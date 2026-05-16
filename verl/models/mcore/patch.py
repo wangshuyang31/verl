@@ -390,7 +390,7 @@ def apply_patch_mbridge():
         megatron.core.utils.get_tensor_model_parallel_group_if_none = get_tensor_model_parallel_group_if_none
 
 
-def apply_patch_megatron_v012_with_torch_v28_v29() -> None:
+def apply_patch_megatron_v012_with_torch_v28():
     # Error due to missing serialization_format in _write_item of megatron v012;
     # resolved by using megatron v013's implementation.
     import inspect
@@ -407,7 +407,7 @@ def apply_patch_megatron_v012_with_torch_v28_v29() -> None:
     from torch.distributed.checkpoint.filesystem import _write_item
 
     if (
-        version.parse(torch.__version__).base_version not in ("2.8.0", "2.9.0")
+        version.parse(torch.__version__).base_version != "2.8.0"
         or version.parse(megatron.core.__version__).base_version != "0.12.1"
     ):
         return
@@ -489,7 +489,163 @@ def apply_patch_megatron_v012_with_torch_v28_v29() -> None:
     from megatron.core.dist_checkpointing.strategies.filesystem_async import FileSystemWriterAsync
 
     FileSystemWriterAsync.write_preloaded_data = write_preloaded_data_patch
+    
+def apply_mtp_inference_patch():
+    from megatron.core.models.gpt.gpt_model import (
+        GPTModel,
+        roll_tensor,
+        MTPLossAutoScaler,
+        MTPLossLoggingHelper,
+        has_config_logger_enabled,
+        log_config_to_disk,
+    )
+    from megatron.core import parallel_state
+    from megatron.core.tensor_parallel import gather_from_sequence_parallel_region
+    from collections import OrderedDict
+    import torch
+    def _patched_postprocess(
+        self,
+        hidden_states,
+        input_ids,
+        position_ids,
+        labels,
+        rotary_pos_emb,
+        rotary_pos_cos,
+        rotary_pos_sin,
+        mtp_in_postprocess=None,
+        loss_mask=None,
+        decoder_input=None,
+        attention_mask=None,
+        inference_params=None,
+        packed_seq_params=None,
+        sequence_len_offset=None,
+        runtime_gather_output=None,
+        extra_block_kwargs=None,
+        inference_context=None,
+    ):
+        in_inference_mode = inference_context is not None and not self.training
+        if in_inference_mode:
+            assert runtime_gather_output, "Inference must always gather TP logits"
 
+        output_weight = None
+        if self.share_embeddings_and_output_weights:
+            output_weight = self.shared_embedding_or_output_weight()
+
+        if mtp_in_postprocess:
+            hidden_states = self.mtp(
+                input_ids=input_ids,
+                position_ids=position_ids,
+                hidden_states=hidden_states,
+                attention_mask=attention_mask,
+                inference_params=inference_params,
+                rotary_pos_emb=rotary_pos_emb,
+                rotary_pos_cos=rotary_pos_cos,
+                rotary_pos_sin=rotary_pos_sin,
+                packed_seq_params=packed_seq_params,
+                sequence_len_offset=sequence_len_offset,
+                embedding=self.embedding,
+                **(extra_block_kwargs or {}),
+            )
+
+        if not self.post_process:
+            return hidden_states
+
+        if self.config.mtp_num_layers is not None:
+            hidden_states_list = torch.chunk(hidden_states, 1 + self.config.mtp_num_layers, dim=0)
+            hidden_states = hidden_states_list[0]
+
+            if labels is not None:
+                mtp_labels = labels.clone()
+                if loss_mask is None:
+                    loss_mask = torch.ones_like(mtp_labels)
+                for mtp_layer_number in range(self.config.mtp_num_layers):
+                    mtp_logits, _ = self.output_layer(
+                        hidden_states_list[mtp_layer_number + 1],
+                        weight=output_weight,
+                        runtime_gather_output=runtime_gather_output,
+                    )
+                    mtp_labels, _ = roll_tensor(
+                        mtp_labels,
+                        shifts=-1,
+                        dims=-1,
+                        cp_group=self.cp_group,
+                        packed_seq_params=packed_seq_params,
+                    )
+                    loss_mask, num_tokens = roll_tensor(
+                        loss_mask,
+                        shifts=-1,
+                        dims=-1,
+                        cp_group=self.cp_group,
+                        packed_seq_params=packed_seq_params,
+                    )
+                    mtp_loss = self.compute_language_model_loss(mtp_labels, mtp_logits)
+                    mtp_loss = loss_mask * mtp_loss
+                    if self.training:
+                        MTPLossLoggingHelper.save_loss_to_tracker(
+                            torch.sum(mtp_loss) / num_tokens,
+                            mtp_layer_number,
+                            self.config.mtp_num_layers,
+                            avg_group=parallel_state.get_data_parallel_group(
+                                with_context_parallel=True
+                            ),
+                        )
+                    mtp_loss_scale = self.config.mtp_loss_scaling_factor / self.config.mtp_num_layers
+                    if self.config.calculate_per_token_loss:
+                        hidden_states = MTPLossAutoScaler.apply(
+                            hidden_states, mtp_loss_scale * mtp_loss
+                        )
+                    else:
+                        hidden_states = MTPLossAutoScaler.apply(
+                            hidden_states, mtp_loss_scale * mtp_loss / num_tokens
+                        )
+
+        sequence_parallel_override = False
+
+        if in_inference_mode and inference_context.materialize_only_last_token_logits:
+            if inference_context.is_static_batching():
+                hidden_states = hidden_states[-1:, :, :]
+            else:
+                if self.output_layer.sequence_parallel:
+                    hidden_states = gather_from_sequence_parallel_region(
+                        hidden_states, group=self.pg_collection.tp
+                    )
+                    self.output_layer.sequence_parallel = False
+                    sequence_parallel_override = True
+
+                hidden_states = inference_context.last_token_logits(
+                    hidden_states.squeeze(1).unsqueeze(0)
+                ).unsqueeze(1)
+
+        logits, _ = self.output_layer(
+            hidden_states, weight=output_weight, runtime_gather_output=runtime_gather_output
+        )
+
+        if sequence_parallel_override:
+            assert (
+                in_inference_mode
+                and inference_context.is_dynamic_batching()
+                and inference_context.materialize_only_last_token_logits
+            )
+            self.output_layer.sequence_parallel = True
+
+        if has_config_logger_enabled(self.config):
+            payload = OrderedDict({
+                'input_ids': input_ids,
+                'position_ids': position_ids,
+                'attention_mask': attention_mask,
+                'decoder_input': decoder_input,
+                'logits': logits,
+            })
+            log_config_to_disk(self.config, payload, prefix='input_and_logits')
+
+        if labels is None:
+            # [s b h] => [b s h]
+            return logits.transpose(0, 1).contiguous()
+
+        loss = self.compute_language_model_loss(labels, logits)
+        return loss
+
+    GPTModel._postprocess = _patched_postprocess
 
 # When using checkpoint + MoE models (like Qwen3-30B-A3B and Qwen3-VL-30B-A3B),
 # input tensors and their grads will stay in gpu memory after forward_backward completes.
