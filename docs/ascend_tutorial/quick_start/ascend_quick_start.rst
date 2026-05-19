@@ -42,11 +42,11 @@ DockerFile镜像构建 & 获取 & 使用
     +---------------+----------------------+
     | Python        | >= 3.10, <3.12       |
     +---------------+----------------------+
-    | CANN          | == 8.5.0             |
+    | CANN          | == 9.0.0             |
     +---------------+----------------------+
-    | torch         | == 2.8.0             |
+    | torch         | == 2.9.0             |
     +---------------+----------------------+
-    | torch_npu     | == 2.8.0             |
+    | torch_npu     | == 2.9.0             |
     +---------------+----------------------+
 
 2. （可选）在 x86 平台安装时，pip 需要配置额外的源，指令如下：
@@ -62,9 +62,9 @@ DockerFile镜像构建 & 获取 & 使用
 基础环境准备完毕后，需要通过指令安装以下软件包：
 
     +---------------+----------------------+
-    | torchvision   | == 0.22.1            |
+    | torchvision   | == 0.24.0            |
     +---------------+----------------------+
-    | triton-ascend | == 3.2.0             |
+    | triton-ascend | == 3.2.1             |
     +---------------+----------------------+
     | transformers  | == 4.57.6            |
     +---------------+----------------------+
@@ -75,13 +75,13 @@ DockerFile镜像构建 & 获取 & 使用
     .. code-block:: bash
     
         # 安装torchvision，版本需要和torch匹配
-        pip install torchvision==0.22.1
+        pip install torchvision==0.24.0
     
         # 清理环境上可能存在的历史triton/triton-ascend软件包残留
         pip uninstall -y triton triton-ascend
     
         # 安装triton-ascend，不需要单独安装triton
-        pip install triton-ascend==3.2.0
+        pip install triton-ascend==3.2.1 --extra-index-url https://triton-ascend.osinfra.cn/pypi/simple/ --trusted-host triton-ascend.osinfra.cn
 
 
 安装 vllm & vllm-ascend
@@ -98,7 +98,7 @@ DockerFile镜像构建 & 获取 & 使用
 
     .. code-block:: bash
 
-        git clone --depth 1 --branch v0.13.0 https://github.com/vllm-project/vllm.git
+        git clone --depth 1 --branch v0.18.0 https://github.com/vllm-project/vllm.git
         cd vllm && pip install -r requirements/build.txt
         VLLM_TARGET_DEVICE=empty pip install -v -e. && cd ..
 
@@ -106,7 +106,7 @@ DockerFile镜像构建 & 获取 & 使用
 
     .. code-block:: bash
 
-        git clone -b releases/v0.13.0 https://github.com/vllm-project/vllm-ascend.git
+        git clone -b releases/v0.18.0 https://github.com/vllm-project/vllm-ascend.git
         cd vllm-ascend && pip install -r requirements.txt    
         export COMPILE_CUSTOM_KERNELS=1 && pip install -v -e . && cd ..
 
@@ -120,8 +120,8 @@ MindSpeed 源码安装指令：
     
         # 下载 MindSpeed，切换到指定commit-id，并下载 Megatron-LM
         git clone https://gitcode.com/Ascend/MindSpeed.git
-        cd MindSpeed && git checkout 2.3.0_core_r0.12.1 && cd ..
-        git clone --depth 1 --branch core_v0.12.1 https://github.com/NVIDIA/Megatron-LM.git
+        cd MindSpeed && git checkout core_r0.16.0 && cd ..
+        git clone --depth 1 --branch core_v0.16.0 https://github.com/NVIDIA/Megatron-LM.git
     
         # 安装 MindSpeed & Megatron
         pip install -e MindSpeed
